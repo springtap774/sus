@@ -1,5 +1,6 @@
 #include <SPI.h>
-#include <TFT_eSPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
 #include <XPT2046_Touchscreen.h>
 #include <SD.h>
 #include <ArduinoJson.h>
@@ -20,9 +21,9 @@
 #define MISO 19
 #define SCK 18
 
-// Display instances
-TFT_eSPI tft1 = TFT_eSPI();
-TFT_eSPI tft2 = TFT_eSPI();
+// Display instances - Adafruit_ILI9341 supports separate instances!
+Adafruit_ILI9341 tft1(TFT1_CS, TFT1_DC, TFT_RST);
+Adafruit_ILI9341 tft2(TFT2_CS, TFT2_DC, TFT_RST);
 XPT2046_Touchscreen ts(TOUCH_CS);
 
 // Screen dimensions
@@ -73,22 +74,23 @@ struct KeyButton {
 std::vector<KeyButton> keyButtons;
 KeyButton backButton, deleteButton;
 
-// Colors
-#define BLACK 0x0000
-#define WHITE 0xFFFF
-#define BLUE 0x001F
-#define RED 0xF800
-#define GREEN 0x07E0
-#define CYAN 0x07FF
-#define MAGENTA 0xF81F
-#define YELLOW 0xFFE0
+// Colors (Adafruit_ILI9341 color constants)
+#define BLACK ILI9341_BLACK
+#define WHITE ILI9341_WHITE
+#define BLUE ILI9341_BLUE
+#define RED ILI9341_RED
+#define GREEN ILI9341_GREEN
+#define CYAN ILI9341_CYAN
+#define MAGENTA ILI9341_MAGENTA
+#define YELLOW ILI9341_YELLOW
 #define GRAY 0x8410
 #define DARKGRAY 0x4208
 
 // Function prototypes
 void setupSPI();
-void selectDisplay(ActiveDisplay display);
+void setActiveSPI(uint8_t activeCS);
 void deselectAllSPI();
+void selectDisplay(ActiveDisplay display);
 void loadMenuFromSD();
 void drawMenu();
 void drawKeyboard();
@@ -118,50 +120,63 @@ void setup() {
   pinMode(TFT_RST, OUTPUT);
   pinMode(OFF_BUTTON, INPUT_PULLUP);
   
+  // ✅ CRITICAL: Set all CS pins HIGH before any SPI operations
+  deselectAllSPI();
+  
   // Reset displays
   digitalWrite(TFT_RST, LOW);
   delay(100);
   digitalWrite(TFT_RST, HIGH);
   delay(100);
   
-  // Deselect all SPI devices initially
-  deselectAllSPI();
-  
   // Initialize SPI
   setupSPI();
   
-  // Initialize displays
-  selectDisplay(DISPLAY_1);
-  tft1.init();
+  // ✅ Initialize displays with proper CS management
+  Serial.println("Initializing Display 1...");
+  setActiveSPI(TFT1_CS);
+  tft1.begin();
   tft1.setRotation(0);
   tft1.fillScreen(BLACK);
   tft1.setTextColor(WHITE);
   tft1.setTextSize(2);
-  tft1.drawString("Display 1 Ready", 10, 10);
+  tft1.setCursor(10, 10);
+  tft1.print("Display 1 Ready");
+  deselectAllSPI();
   
-  selectDisplay(DISPLAY_2);
-  tft2.init();
+  Serial.println("Initializing Display 2...");
+  setActiveSPI(TFT2_CS);
+  tft2.begin();
   tft2.setRotation(0);
   tft2.fillScreen(BLACK);
   tft2.setTextColor(WHITE);
   tft2.setTextSize(2);
-  tft2.drawString("Display 2 Ready", 10, 10);
-  
-  // Initialize touchscreen
+  tft2.setCursor(10, 10);
+  tft2.print("Display 2 Ready");
   deselectAllSPI();
-  digitalWrite(TOUCH_CS, LOW);
+  
+  // ✅ Initialize touchscreen with proper CS isolation
+  Serial.println("Initializing Touchscreen...");
+  setActiveSPI(TOUCH_CS);
   ts.begin();
   ts.setRotation(0);
-  digitalWrite(TOUCH_CS, HIGH);
-  
-  // Initialize SD card
   deselectAllSPI();
+  
+  // ✅ Initialize SD card with proper CS isolation
+  Serial.println("Initializing SD Card...");
+  setActiveSPI(SD_CS);
   if (!SD.begin(SD_CS)) {
+    deselectAllSPI();
     selectDisplay(DISPLAY_2);
-    tft2.drawString("SD Card Failed", 10, 50);
+    tft2.setCursor(10, 50);
+    tft2.print("SD Card Failed");
+    deselectAllSPI();
   } else {
+    deselectAllSPI();
     selectDisplay(DISPLAY_2);
-    tft2.drawString("SD Card OK", 10, 50);
+    tft2.setCursor(10, 50);
+    tft2.print("SD Card OK");
+    deselectAllSPI();
     loadMenuFromSD();
     loadImageFiles();
   }
@@ -172,6 +187,7 @@ void setup() {
   // Draw initial menu
   drawMenu();
   
+  Serial.println("Setup complete!");
   deselectAllSPI();
 }
 
@@ -187,23 +203,23 @@ void loop() {
 
 void setupSPI() {
   SPI.begin(SCK, MISO, MOSI, -1);
-  SPI.setFrequency(27000000); // 27MHz
+  SPI.setFrequency(27000000); // 27MHz - safe for ILI9341
 }
 
-void selectDisplay(ActiveDisplay display) {
-  deselectAllSPI();
+// ✅ CRITICAL: Helper function for safe SPI device switching
+void setActiveSPI(uint8_t activeCS) {
+  // First, ensure ALL CS lines are HIGH
+  digitalWrite(TFT1_CS, HIGH);
+  digitalWrite(TFT2_CS, HIGH);
+  digitalWrite(TOUCH_CS, HIGH);
+  digitalWrite(SD_CS, HIGH);
   
-  if (display == DISPLAY_1) {
-    digitalWrite(TFT1_CS, LOW);
-    // Reconfigure TFT_eSPI for display 1
-    tft1.begin();
-    currentDisplay = DISPLAY_1;
-  } else {
-    digitalWrite(TFT2_CS, LOW);
-    // Reconfigure TFT_eSPI for display 2
-    tft2.begin();
-    currentDisplay = DISPLAY_2;
-  }
+  // Small delay to ensure CS transitions are clean
+  delayMicroseconds(10);
+  
+  // Now activate the desired device
+  digitalWrite(activeCS, LOW);
+  delayMicroseconds(10);
 }
 
 void deselectAllSPI() {
@@ -211,11 +227,21 @@ void deselectAllSPI() {
   digitalWrite(TFT2_CS, HIGH);
   digitalWrite(TOUCH_CS, HIGH);
   digitalWrite(SD_CS, HIGH);
+  delayMicroseconds(10);
+}
+
+void selectDisplay(ActiveDisplay display) {
+  if (display == DISPLAY_1) {
+    setActiveSPI(TFT1_CS);
+    currentDisplay = DISPLAY_1;
+  } else {
+    setActiveSPI(TFT2_CS);
+    currentDisplay = DISPLAY_2;
+  }
 }
 
 void loadMenuFromSD() {
-  deselectAllSPI();
-  digitalWrite(SD_CS, LOW);
+  setActiveSPI(SD_CS);
   
   File file = SD.open("/menu.json");
   if (!file) {
@@ -224,13 +250,13 @@ void loadMenuFromSD() {
     menuItems.push_back({"CSV Lookup", "csv", 20, 80, 200, 50});
     menuItems.push_back({"Image Viewer", "images", 20, 140, 200, 50});
     menuItems.push_back({"Settings", "settings", 20, 200, 200, 50});
-    digitalWrite(SD_CS, HIGH);
+    deselectAllSPI();
     return;
   }
   
   String jsonString = file.readString();
   file.close();
-  digitalWrite(SD_CS, HIGH);
+  deselectAllSPI();
   
   DynamicJsonDocument doc(1024);
   deserializeJson(doc, jsonString);
@@ -257,11 +283,13 @@ void drawMenu() {
   tft2.fillScreen(BLACK);
   tft2.setTextColor(WHITE);
   tft2.setTextSize(2);
-  tft2.drawString("Main Menu", 50, 20);
+  tft2.setCursor(50, 20);
+  tft2.print("Main Menu");
   
   for (auto& item : menuItems) {
     tft2.drawRect(item.x, item.y, item.w, item.h, WHITE);
-    tft2.drawString(item.title, item.x + 10, item.y + 15);
+    tft2.setCursor(item.x + 10, item.y + 15);
+    tft2.print(item.title);
   }
   
   deselectAllSPI();
@@ -308,39 +336,44 @@ void drawKeyboard() {
   tft2.setTextSize(1);
   
   // Draw search string
-  tft2.drawString("Search: " + currentSearchString, 10, 10);
+  tft2.setCursor(10, 10);
+  tft2.print("Search: " + currentSearchString);
   tft2.drawRect(10, 25, 220, 20, WHITE);
-  tft2.drawString(currentSearchString, 15, 30);
+  tft2.setCursor(15, 30);
+  tft2.print(currentSearchString);
   
   // Draw keyboard
   for (auto& key : keyButtons) {
     tft2.drawRect(key.x, key.y, key.w, key.h, WHITE);
     String keyStr = String(key.key);
     if (key.key == ' ') keyStr = "SPC";
-    tft2.drawString(keyStr, key.x + 3, key.y + 10);
+    tft2.setCursor(key.x + 3, key.y + 10);
+    tft2.print(keyStr);
   }
   
   // Draw action buttons
   tft2.drawRect(backButton.x, backButton.y, backButton.w, backButton.h, GREEN);
-  tft2.drawString("BACK", backButton.x + 20, backButton.y + 10);
+  tft2.setCursor(backButton.x + 20, backButton.y + 10);
+  tft2.print("BACK");
   
   tft2.drawRect(deleteButton.x, deleteButton.y, deleteButton.w, deleteButton.h, RED);
-  tft2.drawString("DEL", deleteButton.x + 25, deleteButton.y + 10);
+  tft2.setCursor(deleteButton.x + 25, deleteButton.y + 10);
+  tft2.print("DEL");
   
   deselectAllSPI();
 }
 
 void handleTouch() {
-  deselectAllSPI();
-  digitalWrite(TOUCH_CS, LOW);
+  // ✅ CRITICAL: Isolate touch reading from other SPI devices
+  setActiveSPI(TOUCH_CS);
   
   if (!ts.touched()) {
-    digitalWrite(TOUCH_CS, HIGH);
+    deselectAllSPI();
     return;
   }
   
   TS_Point p = ts.getPoint();
-  digitalWrite(TOUCH_CS, HIGH);
+  deselectAllSPI();
   
   // Map touch coordinates to screen coordinates
   int x = map(p.x, 200, 3700, 0, SCREEN_WIDTH);
@@ -469,13 +502,12 @@ void searchCSV(String query) {
   csvResults.clear();
   csvScrollIndex = 0;
   
-  deselectAllSPI();
-  digitalWrite(SD_CS, LOW);
+  setActiveSPI(SD_CS);
   
   File file = SD.open("/data.csv");
   if (!file) {
     csvResults.push_back("CSV file not found");
-    digitalWrite(SD_CS, HIGH);
+    deselectAllSPI();
     return;
   }
   
@@ -489,7 +521,7 @@ void searchCSV(String query) {
   }
   
   file.close();
-  digitalWrite(SD_CS, HIGH);
+  deselectAllSPI();
   
   if (csvResults.size() == 0) {
     csvResults.push_back("No results found");
@@ -502,8 +534,10 @@ void displayCSVResults() {
   tft1.setTextColor(WHITE);
   tft1.setTextSize(1);
   
-  tft1.drawString("Search Results:", 10, 10);
-  tft1.drawString("Query: " + currentSearchString, 10, 25);
+  tft1.setCursor(10, 10);
+  tft1.print("Search Results:");
+  tft1.setCursor(10, 25);
+  tft1.print("Query: " + currentSearchString);
   
   int y = 50;
   int maxResults = min(8, (int)csvResults.size());
@@ -515,27 +549,34 @@ void displayCSVResults() {
       if (result.length() > 35) {
         result = result.substring(0, 35) + "...";
       }
-      tft1.drawString(result, 5, y);
+      tft1.setCursor(5, y);
+      tft1.print(result);
       y += 15;
     }
   }
   
   // Draw scroll indicators
   if (csvScrollIndex > 0) {
-    tft1.drawString("↑", 220, 40);
+    tft1.setCursor(220, 40);
+    tft1.print("^");
   }
   if (csvScrollIndex < csvResults.size() - 8) {
-    tft1.drawString("↓", 220, 280);
+    tft1.setCursor(220, 280);
+    tft1.print("v");
   }
   
   selectDisplay(DISPLAY_2);
   tft2.fillScreen(BLACK);
   tft2.setTextColor(WHITE);
   tft2.setTextSize(2);
-  tft2.drawString("Touch screen to", 20, 100);
-  tft2.drawString("scroll results", 20, 130);
-  tft2.drawString("Touch here", 20, 280);
-  tft2.drawString("for menu", 20, 300);
+  tft2.setCursor(20, 100);
+  tft2.print("Touch screen to");
+  tft2.setCursor(20, 130);
+  tft2.print("scroll results");
+  tft2.setCursor(20, 280);
+  tft2.print("Touch here");
+  tft2.setCursor(20, 300);
+  tft2.print("for menu");
   
   deselectAllSPI();
 }
@@ -543,12 +584,11 @@ void displayCSVResults() {
 void loadImageFiles() {
   imageFiles.clear();
   
-  deselectAllSPI();
-  digitalWrite(SD_CS, LOW);
+  setActiveSPI(SD_CS);
   
   File root = SD.open("/images");
   if (!root) {
-    digitalWrite(SD_CS, HIGH);
+    deselectAllSPI();
     return;
   }
   
@@ -566,7 +606,7 @@ void loadImageFiles() {
   }
   
   root.close();
-  digitalWrite(SD_CS, HIGH);
+  deselectAllSPI();
 }
 
 void displayCurrentImage() {
@@ -576,28 +616,37 @@ void displayCurrentImage() {
   if (imageFiles.size() == 0) {
     tft1.setTextColor(WHITE);
     tft1.setTextSize(2);
-    tft1.drawString("No images found", 30, 150);
+    tft1.setCursor(30, 150);
+    tft1.print("No images found");
   } else {
     // Simple image display (would need proper BMP/JPG decoder)
     tft1.setTextColor(WHITE);
     tft1.setTextSize(1);
-    tft1.drawString("Image: " + String(imageIndex + 1) + "/" + String(imageFiles.size()), 10, 10);
-    tft1.drawString(imageFiles[imageIndex], 10, 25);
+    tft1.setCursor(10, 10);
+    tft1.print("Image: " + String(imageIndex + 1) + "/" + String(imageFiles.size()));
+    tft1.setCursor(10, 25);
+    tft1.print(imageFiles[imageIndex]);
     
     // Placeholder for actual image
     tft1.drawRect(50, 50, 140, 200, WHITE);
-    tft1.drawString("IMAGE", 100, 140);
-    tft1.drawString("PLACEHOLDER", 80, 160);
+    tft1.setCursor(100, 140);
+    tft1.print("IMAGE");
+    tft1.setCursor(80, 160);
+    tft1.print("PLACEHOLDER");
   }
   
   selectDisplay(DISPLAY_2);
   tft2.fillScreen(BLACK);
   tft2.setTextColor(WHITE);
   tft2.setTextSize(2);
-  tft2.drawString("Image Viewer", 40, 50);
-  tft2.drawString("< PREV   NEXT >", 20, 150);
-  tft2.drawString("Touch bottom", 30, 250);
-  tft2.drawString("for menu", 50, 280);
+  tft2.setCursor(40, 50);
+  tft2.print("Image Viewer");
+  tft2.setCursor(20, 150);
+  tft2.print("< PREV   NEXT >");
+  tft2.setCursor(30, 250);
+  tft2.print("Touch bottom");
+  tft2.setCursor(50, 280);
+  tft2.print("for menu");
   
   deselectAllSPI();
 }
@@ -628,12 +677,11 @@ void wakeUp() {
 
 // Additional helper function for proper image display
 void displayImage(String filename) {
-  deselectAllSPI();
-  digitalWrite(SD_CS, LOW);
+  setActiveSPI(SD_CS);
   
   File file = SD.open(filename);
   if (!file) {
-    digitalWrite(SD_CS, HIGH);
+    deselectAllSPI();
     return;
   }
   
@@ -644,9 +692,9 @@ void displayImage(String filename) {
   tft1.fillScreen(BLACK);
   tft1.setTextColor(WHITE);
   tft1.setTextSize(2);
-  tft1.drawString("Loading...", 50, 150);
+  tft1.setCursor(50, 150);
+  tft1.print("Loading...");
   
   file.close();
-  digitalWrite(SD_CS, HIGH);
   deselectAllSPI();
 }
